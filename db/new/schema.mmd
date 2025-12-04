@@ -1,0 +1,264 @@
+erDiagram
+  public_award_event_ref {
+    INTEGER id PK
+    TEXT name
+    GLOBES Golden
+  }
+
+  public_award_nomination_type_ref {
+    SMALLINT id PK
+    TEXT name
+  }
+
+  public_cast_role_type_ref {
+    SMALLINT id PK
+    TEXT name
+  }
+
+  public_certificate_country {
+    SMALLINT country_id
+    SMALLINT certificate_id
+    SMALLINT min_age
+    KEY PRIMARY PK
+  }
+
+  public_certificate_ref {
+    SMALLINT id PK
+    TEXT name
+    TEXT description
+  }
+
+  public_connection_type_ref {
+    SMALLINT id PK
+    TEXT name
+  }
+
+  public_country_ref {
+    SMALLINT id PK
+    TEXT name
+    CHAR iso2_code
+    CHAR iso3_code
+  }
+
+  public_display_ref {
+    SMALLINT id PK
+    TEXT name
+  }
+
+  public_genre_ref {
+    SMALLINT id PK
+    TEXT name
+  }
+
+  public_language_ref {
+    SMALLINT id PK
+    TEXT name
+    TEXT iso_code
+  }
+
+  public_media_file {
+    BIGSERIAL id PK
+    INTEGER title_id
+    SMALLINT quality_id
+    SMALLINT display_id
+    TEXT file_path
+    BIGINT file_size_bytes
+    SMALLINT audio_language_id
+    SMALLINT subtitle_language_id
+    BOOLEAN is_missing
+    TIMESTAMPTZ last_checked_at
+    TIMESTAMPTZ created_at
+    TIMESTAMPTZ updated_at
+  }
+
+  public_not_downloaded_title {
+    BIGSERIAL id PK
+    TEXT imdb_id
+    TEXT title_name
+    TEXT reason
+    TIMESTAMPTZ last_checked_at
+  }
+
+  public_parental_guide_category_ref {
+    SMALLINT id PK
+    TEXT name
+  }
+
+  public_person {
+    BIGINT id PK
+    TEXT imdb_id
+    SMALLINT birth_year
+    SMALLINT death_year
+    TEXT primary_profession
+    TIMESTAMPTZ created_at
+    TIMESTAMPTZ updated_at
+  }
+
+  public_quality_ref {
+    SMALLINT id PK
+    TEXT name
+  }
+
+  public_requested_title {
+    BIGSERIAL id PK
+    TEXT imdb_id
+    TEXT title_name
+    TEXT requested_by
+    TIMESTAMPTZ requested_at
+    TEXT notes
+  }
+
+  public_tag {
+    INTEGER id PK
+    TEXT name
+    WINNER Oscar
+  }
+
+  public_title {
+    INTEGER id PK
+    TEXT imdb_id
+    TEXT primary_title
+    TEXT original_title
+    SMALLINT start_year
+    SMALLINT end_year
+    INTEGER runtime_minutes
+    SMALLINT primary_country_id
+    TEXT poster_url
+    SMALLINT metacritic_rating
+    BIGINT revenue
+    NUMERIC imdb_rating
+    INTEGER imdb_votes
+    BIGINT popularity
+    INTEGER parent_title_id
+    INTEGER season_number
+    INTEGER episode_number
+    INTEGER total_seasons
+    INTEGER total_episodes
+    DATE date_released
+    TIMESTAMPTZ date_added
+    TIMESTAMPTZ date_updated
+    BOOLEAN is_adult
+    BOOLEAN is_available
+    BIGINT viewed_count
+    BIGINT played_count
+    BIGINT liked_count
+    BIGINT disliked_count
+    TIMESTAMPTZ last_watched_at
+    SMALLINT user_rating
+    TEXT user_notes
+    TEXT folder_name
+    TEXT folder_path
+  }
+
+  public_title_alias {
+    INTEGER title_id
+    TEXT alias
+    KEY PRIMARY PK
+  }
+
+  public_title_award {
+    INTEGER title_id
+    BIGINT person_id
+    INTEGER event_id
+    SMALLINT nomination_type_id
+    INTEGER award_year
+    TEXT description
+    TEXT category
+    KEY PRIMARY PK
+  }
+
+  public_title_cast {
+    INTEGER title_id
+    BIGINT person_id
+    SMALLINT role_type_id
+    TEXT character_name
+    INTEGER billing_order
+    BOOLEAN is_guest
+    BOOLEAN is_voice
+    KEY PRIMARY PK
+  }
+
+  public_title_certificate {
+    INTEGER title_id
+    SMALLINT certificate_id
+    SMALLINT country_id
+    KEY PRIMARY PK
+  }
+
+  public_title_connection {
+    INTEGER title_id
+    INTEGER other_title_id
+    SMALLINT connection_type_id
+    TEXT notes
+    KEY PRIMARY PK
+  }
+
+  public_title_country {
+    INTEGER title_id
+    SMALLINT country_id
+    KEY PRIMARY PK
+  }
+
+  public_title_genre {
+    INTEGER title_id
+    SMALLINT genre_id
+    KEY PRIMARY PK
+  }
+
+  public_title_language {
+    INTEGER title_id
+    SMALLINT language_id
+    BOOLEAN is_original
+    KEY PRIMARY PK
+  }
+
+  public_title_parental_guide {
+    INTEGER title_id
+    SMALLINT category_id
+    SMALLINT severity
+    KEY PRIMARY PK
+  }
+
+  public_title_tag {
+    INTEGER title_id
+    INTEGER tag_id
+    KEY PRIMARY PK
+  }
+
+  public_title_type_ref {
+    SMALLINT id PK
+    TEXT name
+  }
+
+  public_country_ref ||--o{ public_certificate_country : FK
+  public_certificate_ref ||--o{ public_certificate_country : FK
+  public_title_type_ref ||--o{ public_title : FK
+  public_country_ref ||--o{ public_title : FK
+  public_title ||--o{ public_title : FK
+  public_title ||--o{ public_title_alias : FK
+  public_title ||--o{ public_title_country : FK
+  public_country_ref ||--o{ public_title_country : FK
+  public_title ||--o{ public_title_language : FK
+  public_language_ref ||--o{ public_title_language : FK
+  public_title ||--o{ public_title_genre : FK
+  public_genre_ref ||--o{ public_title_genre : FK
+  public_title ||--o{ public_title_certificate : FK
+  public_certificate_ref ||--o{ public_title_certificate : FK
+  public_country_ref ||--o{ public_title_certificate : FK
+  public_title ||--o{ public_title_cast : FK
+  public_person ||--o{ public_title_cast : FK
+  public_cast_role_type_ref ||--o{ public_title_cast : FK
+  public_title ||--o{ public_title_connection : FK
+  public_connection_type_ref ||--o{ public_title_connection : FK
+  public_title ||--o{ public_title_parental_guide : FK
+  public_parental_guide_category_ref ||--o{ public_title_parental_guide : FK
+  public_title ||--o{ public_title_award : FK
+  public_person ||--o{ public_title_award : FK
+  public_award_event_ref ||--o{ public_title_award : FK
+  public_award_nomination_type_ref ||--o{ public_title_award : FK
+  public_title ||--o{ public_media_file : FK
+  public_quality_ref ||--o{ public_media_file : FK
+  public_display_ref ||--o{ public_media_file : FK
+  public_language_ref ||--o{ public_media_file : FK
+  public_title ||--o{ public_title_tag : FK
+  public_tag ||--o{ public_title_tag : FK

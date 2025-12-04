@@ -1,0 +1,303 @@
+erDiagram
+  Lines_AwardTitleLine {
+    INTEGER TitleID
+    INTEGER EventID
+    BIGINT CastID
+    CHARACTER AwardYear
+    SMALLINT NominationType
+    CHARACTER Description
+    CHARACTER Category
+  }
+
+  Lines_CastTitleLine {
+    INTEGER TitleID
+    INTEGER CastID
+    SMALLINT CastType
+    CHARACTER CastRole
+    SMALLINT Sequence
+  }
+
+  Lines_CertificateTitleLine {
+    INTEGER TitleID
+    SMALLINT CountryID
+    INTEGER CertificateID
+  }
+
+  Lines_CompanyTitleLine {
+    INTEGER TitleID
+    INTEGER CompanyID
+  }
+
+  Lines_ConnectionTitleLine {
+    INTEGER TitleID
+    INTEGER ConnectionTitleID
+    SMALLINT ConnectionType
+  }
+
+  Lines_CountryTitleLine {
+    INTEGER TitleID
+    SMALLINT CountryID
+  }
+
+  Lines_FileTitleLine {
+    INTEGER TitleID
+    SMALLINT QualityID
+    INTEGER DisplayID
+    INTEGER AudioLanguageID
+    INTEGER SubtitleLanguageID
+  }
+
+  Lines_GenreTitleLine {
+    INTEGER TitleID
+    INTEGER GenreID
+  }
+
+  Lines_KnownAsTitleLine {
+    INTEGER TitleID
+    CHARACTER KnownAs
+  }
+
+  Lines_LanguageTitleLine {
+    INTEGER TitleID
+    SMALLINT LanguageID
+  }
+
+  Lines_SimilaritiesTitleLine {
+    INTEGER TitleID
+    INTEGER SimilarTitleID
+  }
+
+  MonitorPackages_MonitorPackage1 {
+    INTEGER Application
+    SMALLINT Status
+    SMALLINT ItemsCompleted
+    INTEGER ActiveTitleID
+    TIMESTAMP ClosedAt
+    NUMERIC Average
+    BOOLEAN RunOrder
+    BOOLEAN ShowFP
+  }
+
+  MonitorPackages_MonitorPackage2 {
+    INTEGER Application
+    SMALLINT Status
+    SMALLINT ItemsCompleted
+    INTEGER ActiveTitleID
+    TIMESTAMP ClosedAt
+    NUMERIC Average
+    BOOLEAN RunOrder
+    BOOLEAN ShowFP
+  }
+
+  MonitorPackages_MonitorPackage3 {
+    INTEGER Application
+    SMALLINT Status
+    SMALLINT ItemsCompleted
+    INTEGER ActiveTitleID
+    TIMESTAMP ClosedAt
+    NUMERIC Average
+    BOOLEAN RunOrder
+    BOOLEAN ShowFP
+  }
+
+  MonitorPackages_MonitorPackage4 {
+    INTEGER Application
+    SMALLINT Status
+    SMALLINT ItemsCompleted
+    INTEGER ActiveTitleID
+    TIMESTAMP ClosedAt
+    NUMERIC Average
+    BOOLEAN RunOrder
+    BOOLEAN ShowFP
+  }
+
+  References_AwardEventRef {
+    INTEGER EventID
+    CHARACTER EventName
+  }
+
+  References_AwardNominationTypeRef {
+    SMALLINT NominationTypeID
+    CHARACTER NominationType
+  }
+
+  References_CastTypeRef {
+    SMALLINT CastTypeID
+    CHARACTER CastTypeDescription
+  }
+
+  References_CategoryRef {
+    SMALLINT CategoryID
+    CHARACTER CategoryDecription
+  }
+
+  References_CertificateCountryRef {
+    INTEGER CountryID
+    INTEGER CertificateID
+    INTEGER Age
+  }
+
+  References_CertificateRef {
+    INTEGER CertificateID
+    CHARACTER CertificateName
+  }
+
+  References_ConnectionTypeRef {
+    SMALLINT ConnectionTypeID
+    CHARACTER ConnectionTypeDescription
+  }
+
+  References_CountryRef {
+    SMALLINT CountryID
+    CHARACTER CountryName
+    CHARACTER CountryCode
+  }
+
+  References_DisplayRef {
+    SMALLINT DisplayID
+    CHARACTER DisplayType
+  }
+
+  References_GenreRef {
+    SMALLINT GenreID
+    CHARACTER GenreName
+  }
+
+  References_LanguageRef {
+    SMALLINT LanguageID
+    CHARACTER LanguageName
+    CHARACTER LanguageCode
+  }
+
+  References_ParentGuideRef {
+    SMALLINT ParentGuideID
+    CHARACTER ParentGuideDescription
+  }
+
+  References_QualityRef {
+    SMALLINT QualityID
+    CHARACTER QualityName
+  }
+
+  References_RecordRef {
+    SMALLINT RecordID
+    CHARACTER RecordType
+  }
+
+  References_TitleTypeRef {
+    SMALLINT TypeID
+    CHARACTER TypeName
+  }
+
+  Tables_CastTable {
+    BIGINT CastID
+    CHARACTER CastName
+    CHARACTER CastImageURL
+    BOOLEAN IsDirector
+    BOOLEAN IsWriter
+    BOOLEAN IsCharacter
+    CHARACTER CastDescription
+  }
+
+  Tables_CompanyTable {
+    INTEGER CompanyID
+    CHARACTER CompanyName
+  }
+
+  Tables_NotDownloaded {
+    INTEGER TitleID
+  }
+
+  Tables_RequestedTitles {
+    INTEGER TitleID
+  }
+
+  Tables_TitleTable {
+    INTEGER TitleID
+    SMALLINT TitleType
+    CHARACTER TitleName
+    SMALLINT TitleYear
+    CHARACTER TitleYearTxt
+    CHARACTER FolderName
+    CHARACTER FolderPath
+    CHARACTER PosterURL
+    CHARACTER OriginalTitle
+    SMALLINT TitleLength
+    TIMESTAMP DateReleased
+    SMALLINT MetacriticRating
+    BIGINT Revenue
+    NUMERIC IMDbRating
+    INTEGER IMDbVotes
+    BIGINT Popularity
+    INTEGER ParentID
+    CHARACTER ParentName
+    CHARACTER ParentYear
+    CHARACTER EpisodeSeason
+    INTEGER EpisodeNumber
+    INTEGER PreviousTitleID
+    INTEGER NextTitleID
+    SMALLINT TotalSeasons
+    SMALLINT TotalEpisodes
+    TEXT TitleSummary
+    TEXT TitleStoryLine
+    SMALLINT TitleCertificate
+    SMALLINT TitleCategory
+    SMALLINT Nudity
+    SMALLINT Violence
+    SMALLINT Profanity
+    SMALLINT AlcoholDrugSmoking
+    SMALLINT Frightening
+    SMALLINT TitleCountry
+    BOOLEAN Available
+    TIMESTAMP DateAdded
+    TIMESTAMP DateUpdated
+    BIGINT Viewed
+    BIGINT Played
+    BIGINT Liked
+    BIGINT UnLiked
+    BOOLEAN PosterDownloaded
+    SMALLINT TitleLanguage
+  }
+
+  Tables_ToBeUpdated {
+    INTEGER TitleID
+  }
+
+  public_CompanyTable {
+    INTEGER CompanyID
+    CHARACTER CompanyName
+  }
+
+  Tables_CastTable ||--o{ Lines_AwardTitleLine : FK
+  References_AwardEventRef ||--o{ Lines_AwardTitleLine : FK
+  References_AwardNominationTypeRef ||--o{ Lines_AwardTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_AwardTitleLine : FK
+  Tables_CastTable ||--o{ Lines_CastTitleLine : FK
+  References_CastTypeRef ||--o{ Lines_CastTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_CastTitleLine : FK
+  References_CertificateRef ||--o{ Lines_CertificateTitleLine : FK
+  References_CountryRef ||--o{ Lines_CertificateTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_CertificateTitleLine : FK
+  Tables_CompanyTable ||--o{ Lines_CompanyTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_CompanyTitleLine : FK
+  References_ConnectionTypeRef ||--o{ Lines_ConnectionTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_ConnectionTitleLine : FK
+  References_CountryRef ||--o{ Lines_CountryTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_CountryTitleLine : FK
+  References_LanguageRef ||--o{ Lines_FileTitleLine : FK
+  References_DisplayRef ||--o{ Lines_FileTitleLine : FK
+  References_QualityRef ||--o{ Lines_FileTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_FileTitleLine : FK
+  References_GenreRef ||--o{ Lines_GenreTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_GenreTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_KnownAsTitleLine : FK
+  References_LanguageRef ||--o{ Lines_LanguageTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_LanguageTitleLine : FK
+  Tables_TitleTable ||--o{ Lines_SimilaritiesTitleLine : FK
+  References_CertificateRef ||--o{ References_CertificateCountryRef : FK
+  References_CountryRef ||--o{ References_CertificateCountryRef : FK
+  References_ParentGuideRef ||--o{ Tables_TitleTable : FK
+  References_CategoryRef ||--o{ Tables_TitleTable : FK
+  References_CertificateRef ||--o{ Tables_TitleTable : FK
+  References_TitleTypeRef ||--o{ Tables_TitleTable : FK
+  References_CountryRef ||--o{ Tables_TitleTable : FK
