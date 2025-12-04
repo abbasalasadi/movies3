@@ -1,4 +1,3 @@
-// cmd/migrate-old-db/main.go
 package main
 
 import (
@@ -12,54 +11,38 @@ import (
 	_ "github.com/lib/pq"
 )
 
-func main() {
-	var oldDSNFlag, newDSNFlag, phaseFlag string
-	var dryRunFlag bool
+var (
+	oldDSN = flag.String("old", "", "Postgres DSN for OLD database (mediadb)")
+	newDSN = flag.String("new", "", "Postgres DSN for NEW database (movies3db)")
+	phase  = flag.String("phase", "refs", "Migration phase (refs | core-persons | core-title | junctions-country | junctions-language | junctions-genre | junctions-alias | junctions-certificate | junctions)")
+	dryRun = flag.Bool("dry-run", false, "if set, do NOT write to new DB; just read and count")
+)
 
-	flag.StringVar(&oldDSNFlag, "old", "", "Postgres DSN for OLD database (mediadb)")
-	flag.StringVar(&newDSNFlag, "new", "", "Postgres DSN for NEW database (movies3db)")
-	flag.BoolVar(&dryRunFlag, "dry-run", false, "if set, do NOT write to new DB; just read and count")
-	flag.StringVar(&phaseFlag, "phase", "", "migration phase: refs | core | core-person | core-title | junctions")
+func main() {
+	log.SetOutput(os.Stdout)
 	flag.Parse()
 
-	oldDSN := firstNonEmpty(os.Getenv("OLD_DB_DSN"), oldDSNFlag)
-	newDSN := firstNonEmpty(os.Getenv("NEW_DB_DSN"), newDSNFlag)
-	phase := firstNonEmpty(os.Getenv("MIGRATION_PHASE"), phaseFlag)
-	if phase == "" {
-		phase = "refs"
+	if *oldDSN == "" || *newDSN == "" {
+		log.Printf("ERROR: both -old and -new DSNs are required")
+		flag.Usage()
+		os.Exit(2)
 	}
 
-	dryRun := dryRunFlag
-	if env := os.Getenv("DRY_RUN"); env != "" {
-		switch env {
-		case "1", "true", "TRUE", "True":
-			dryRun = true
-		case "0", "false", "FALSE", "False":
-			dryRun = false
-		}
-	}
+	ctx := context.Background()
 
-	if oldDSN == "" || newDSN == "" {
-		log.Fatalf("both OLD_DB_DSN/--old and NEW_DB_DSN/--new must be set")
-	}
-
-	log.Printf("Connecting to OLD DB: %s", oldDSN)
-	oldDB, err := sql.Open("postgres", oldDSN)
+	log.Printf("Connecting to OLD DB: %s", *oldDSN)
+	oldDB, err := sql.Open("postgres", *oldDSN)
 	if err != nil {
 		log.Fatalf("open old DB: %v", err)
 	}
 	defer oldDB.Close()
 
-	log.Printf("Connecting to NEW DB: %s", newDSN)
-	newDB, err := sql.Open("postgres", newDSN)
+	log.Printf("Connecting to NEW DB: %s", *newDSN)
+	newDB, err := sql.Open("postgres", *newDSN)
 	if err != nil {
 		log.Fatalf("open new DB: %v", err)
 	}
 	defer newDB.Close()
-
-	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, 24*time.Hour)
-	defer cancel()
 
 	if err := oldDB.PingContext(ctx); err != nil {
 		log.Fatalf("ping old DB: %v", err)
@@ -68,48 +51,50 @@ func main() {
 		log.Fatalf("ping new DB: %v", err)
 	}
 
-	log.Printf("=== Starting migration phase=%q dryRun=%v ===", phase, dryRun)
+	log.Printf("=== Starting migration phase=%q dryRun=%v ===", *phase, *dryRun)
+	start := time.Now()
 
 	var phaseErr error
 
-	switch phase {
+	switch *phase {
 	case "refs":
-		phaseErr = MigrateRefsPhase(ctx, oldDB, newDB, dryRun)
+		phaseErr = MigrateRefsPhase(ctx, oldDB, newDB, *dryRun)
 
-	case "core":
-		// Backwards-compatible: run persons then titles
-		log.Printf(`phase "core" selected: running persons THEN titles`)
-		if err := MigrateCorePersonsPhase(ctx, oldDB, newDB, dryRun); err != nil {
-			phaseErr = err
-		} else {
-			phaseErr = MigrateCoreTitlesPhase(ctx, oldDB, newDB, dryRun)
-		}
-
-	case "core-person":
-		phaseErr = MigrateCorePersonsPhase(ctx, oldDB, newDB, dryRun)
+	case "core-persons":
+		// implemented earlier, not touched here
+		phaseErr = MigrateCorePersonsPhase(ctx, oldDB, newDB, *dryRun)
 
 	case "core-title":
-		phaseErr = MigrateCoreTitlesPhase(ctx, oldDB, newDB, dryRun)
+		phaseErr = MigrateCoreTitlesPhase(ctx, oldDB, newDB, *dryRun)
 
 	case "junctions":
-		phaseErr = MigrateJunctionsPhase(ctx, oldDB, newDB, dryRun)
+		// OPTIONAL umbrella phase if you still use it:
+		// basic + others, depending on how you wired it
+		phaseErr = MigrateJunctionsPhase(ctx, oldDB, newDB, *dryRun)
+
+	case "junctions-country":
+		phaseErr = MigrateJunctionsCountryPhase(ctx, oldDB, newDB, *dryRun)
+
+	case "junctions-language":
+		phaseErr = MigrateJunctionsLanguagePhase(ctx, oldDB, newDB, *dryRun)
+
+	case "junctions-genre":
+		phaseErr = MigrateJunctionsGenrePhase(ctx, oldDB, newDB, *dryRun)
+
+	case "junctions-alias":
+		phaseErr = MigrateJunctionsAliasPhase(ctx, oldDB, newDB, *dryRun)
+
+	case "junctions-certificate":
+		phaseErr = MigrateJunctionsCertificatePhase(ctx, oldDB, newDB, *dryRun)
 
 	default:
-		log.Fatalf("unknown phase %q (expected refs|core|core-person|core-title|junctions)", phase)
+		log.Fatalf("unknown phase %q", *phase)
 	}
 
 	if phaseErr != nil {
-		log.Fatalf("migration phase %q failed: %v", phase, phaseErr)
+		log.Fatalf("migration phase %q failed: %v", *phase, phaseErr)
 	}
 
-	log.Printf("=== Migration phase=%q completed successfully ===", phase)
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+	log.Printf("=== Migration phase=%q completed successfully in %s ===",
+		*phase, time.Since(start).Truncate(time.Millisecond))
 }

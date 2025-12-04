@@ -221,15 +221,121 @@ migrate-titles: ## REAL titles migration only
 # ---- Junctions (later: countries, languages, genres, cast, media_file, etc.) ----
 
 .PHONY: migrate-junctions-dry-run
-migrate-junctions-dry-run: ## DRY-RUN junctions/links migration
-	@echo ">> DRY-RUN junctions migration"
+migrate-junctions-dry-run: ## DRY-RUN basic junction migrations (no writes)
+	@echo ">> DRY-RUN junctions (basic title_* junctions) [stub]"
 	@echo "   OLD_DB: $(OLD_DB_DSN)"
 	@echo "   NEW_DB: $(NEW_DB_DSN)"
-	@OLD_DB_DSN='$(OLD_DB_DSN)' NEW_DB_DSN='$(NEW_DB_DSN)' MIGRATION_PHASE=junctions DRY_RUN=1 $(MIGRATE_CMD)
+	@$(GO) run ./cmd/migrate-old-db \
+		-old "$(OLD_DB_DSN)" \
+		-new "$(NEW_DB_DSN)" \
+		-phase junctions \
+		-dry-run
 
 .PHONY: migrate-junctions
-migrate-junctions: ## REAL junctions/links migration
-	@echo ">> REAL junctions migration"
+migrate-junctions: ## REAL basic junction migrations (title_* junctions)
+	@echo ">> REAL junctions migration (basic title_* junctions)"
 	@echo "   OLD_DB: $(OLD_DB_DSN)"
 	@echo "   NEW_DB: $(NEW_DB_DSN)"
-	@OLD_DB_DSN='$(OLD_DB_DSN)' NEW_DB_DSN='$(NEW_DB_DSN)' MIGRATION_PHASE=junctions DRY_RUN=0 $(MIGRATE_CMD)
+	@$(GO) run ./cmd/migrate-old-db \
+		-old "$(OLD_DB_DSN)" \
+		-new "$(NEW_DB_DSN)" \
+		-phase junctions
+
+# ---------------------------
+# Junctions: split phases
+# ---------------------------
+
+migrate-junctions-country-dry-run:
+	@echo ">> DRY-RUN junctions COUNTRY (CountryTitleLine -> title_country)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-country \
+	  -dry-run
+
+migrate-junctions-country:
+	@echo ">> REAL junctions COUNTRY (CountryTitleLine -> title_country)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-country
+
+migrate-junctions-language-dry-run:
+	@echo ">> DRY-RUN junctions LANGUAGE (LanguageTitleLine -> title_language)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-language \
+	  -dry-run
+
+migrate-junctions-language:
+	@echo ">> REAL junctions LANGUAGE (LanguageTitleLine -> title_language)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-language
+
+migrate-junctions-genre-dry-run:
+	@echo ">> DRY-RUN junctions GENRE (GenreTitleLine -> title_genre)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-genre \
+	  -dry-run
+
+migrate-junctions-genre:
+	@echo ">> REAL junctions GENRE (GenreTitleLine -> title_genre)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-genre
+
+migrate-junctions-alias-dry-run:
+	@echo ">> DRY-RUN junctions ALIAS (KnownAsTitleLine -> title_alias)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-alias \
+	  -dry-run
+
+migrate-junctions-alias:
+	@echo ">> REAL junctions ALIAS (KnownAsTitleLine -> title_alias)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-alias
+
+migrate-junctions-certificate-dry-run:
+	@echo ">> DRY-RUN junctions CERTIFICATE (CertificateTitleLine -> title_certificate)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-certificate \
+	  -dry-run
+
+migrate-junctions-certificate:
+	@echo ">> REAL junctions CERTIFICATE (CertificateTitleLine -> title_certificate)"
+	@echo "   OLD_DB: $(OLD_DB_DSN)"
+	@echo "   NEW_DB: $(NEW_DB_DSN)"
+	go run ./cmd/migrate-old-db \
+	  -old "$(OLD_DB_DSN)" \
+	  -new "$(NEW_DB_DSN)" \
+	  -phase junctions-certificate

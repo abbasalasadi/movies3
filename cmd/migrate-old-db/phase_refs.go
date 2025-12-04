@@ -9,11 +9,10 @@ import (
 	"time"
 )
 
-// runReferenceMigration migrates all lookup / reference tables that do not depend
+// MigrateRefsPhase migrates all lookup / reference tables that do not depend
 // on person/title rows.
-func runReferenceMigration(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	log.Printf("=== Starting reference data migration [DRY-RUN=%v] ===", dryRun)
-	start := time.Now()
+func MigrateRefsPhase(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	log.Printf("=== Starting reference data migration [%s] ===", modeLabel(dryRun))
 
 	steps := []struct {
 		name string
@@ -34,931 +33,969 @@ func runReferenceMigration(ctx context.Context, oldDB, newDB *sql.DB, dryRun boo
 		{"certificate_country", migrateCertificateCountry},
 	}
 
+	start := time.Now()
 	for _, step := range steps {
 		log.Printf("--- Migrating %s ---", step.name)
-		s := time.Now()
+		stepStart := time.Now()
+
 		if err := step.fn(ctx, oldDB, newDB, dryRun); err != nil {
 			return fmt.Errorf("migration step %s failed: %w", step.name, err)
 		}
-		log.Printf("--- Done %s in %s ---", step.name, time.Since(s).Truncate(time.Millisecond))
+
+		log.Printf("--- Done %s in %s ---", step.name, time.Since(stepStart))
 	}
 
-	log.Printf("=== All reference migrations completed in %s [DRY-RUN=%v] ===",
-		time.Since(start).Truncate(time.Millisecond), dryRun)
+	log.Printf("=== All reference migrations completed in %s [%s] ===",
+		time.Since(start), modeLabel(dryRun))
+
 	return nil
 }
 
-//
-// country_ref
-//
-
-func migrateCountryRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."CountryRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old CountryRef: %w", err)
-	}
-
+func modeLabel(dryRun bool) string {
 	if dryRun {
-		log.Printf("migrateCountryRef [DRY-RUN]: would process %d rows", total)
-		return nil
+		return "DRY-RUN (no writes)"
 	}
+	return "LIVE"
+}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "CountryName", "CountryCode"
-		FROM "References"."CountryRef"
-		ORDER BY "CountryID" ASC
-	`)
+// migrateCountryRef migrates Countries."CountryRef" -> country_ref.
+func migrateCountryRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "CountryID", "CountryName", "CountryCode"
+		FROM "Countries"."CountryRef"
+		ORDER BY "CountryID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query CountryRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx country_ref: %w", err)
+	type countryRow struct {
+		id   int64
+		name string
+		code sql.NullString
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO country_ref (name, iso2_code, iso3_code)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (name) DO UPDATE
-		SET
-			iso2_code = EXCLUDED.iso2_code,
-			iso3_code = EXCLUDED.iso3_code
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare country_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var (
-		processed   int64
-		nonISOCount int64
-	)
-
+	var allRows []countryRow
 	for rows.Next() {
-		var (
-			name string
-			code sql.NullString
-		)
-		if err := rows.Scan(&name, &code); err != nil {
+		var r countryRow
+		if err := rows.Scan(&r.id, &r.name, &r.code); err != nil {
 			return fmt.Errorf("scan CountryRef row: %w", err)
 		}
-
-		var iso2, iso3 *string
-		if code.Valid {
-			c := strings.TrimSpace(strings.ToLower(code.String))
-			switch len(c) {
-			case 2:
-				up := strings.ToUpper(c)
-				iso2 = &up
-			case 3:
-				up := strings.ToUpper(c)
-				iso3 = &up
-			default:
-				nonISOCount++
-				log.Printf("WARN: country_ref name=%q has non-ISO code %q (len=%d); inserting with NULL iso2/iso3",
-					name, c, len(c))
-			}
-		}
-
-		if _, errExec := stmt.ExecContext(ctx, name, iso2, iso3); errExec != nil {
-			return fmt.Errorf("insert country_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate CountryRef: %w", err)
 	}
 
-	if nonISOCount > 0 {
-		log.Printf("migrateCountryRef: %d rows had non-ISO codes; inserted with NULL iso2/iso3", nonISOCount)
-	}
-	log.Printf("migrateCountryRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit country_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateCountryRef: read %d rows from Countries.\"CountryRef\"", len(allRows))
 
-//
-// language_ref
-//
-
-func migrateLanguageRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."LanguageRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old LanguageRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateLanguageRef [DRY-RUN]: would process %d rows", total)
+		// Just log some stats and return.
+		var nonISO int
+		for _, r := range allRows {
+			code := strings.TrimSpace(strings.ToLower(r.code.String))
+			if code == "" {
+				continue
+			}
+			// IMDb-style 4-letter codes for historical countries, etc.
+			if len(code) != 2 && len(code) != 3 {
+				nonISO++
+			}
+		}
+		log.Printf("migrateCountryRef [DRY-RUN]: %d rows total, %d rows have non-ISO-like codes", len(allRows), nonISO)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "LanguageName", "LanguageCode"
-		FROM "References"."LanguageRef"
-		ORDER BY "LanguageID" ASC
-	`)
+	// Insert into new.country_ref
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx country_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO country_ref (id, name, iso2, iso3)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name,
+		    iso2 = EXCLUDED.iso2,
+		    iso3 = EXCLUDED.iso3
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert country_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	var nonISO int
+	for _, r := range allRows {
+		var iso2, iso3 sql.NullString
+		code := strings.TrimSpace(strings.ToLower(r.code.String))
+		if code != "" {
+			switch len(code) {
+			case 2:
+				iso2 = sql.NullString{String: strings.ToUpper(code), Valid: true}
+			case 3:
+				iso3 = sql.NullString{String: strings.ToUpper(code), Valid: true}
+			default:
+				nonISO++
+				log.Printf("WARN: country_ref id=%d name=%q has non-ISO code %q (len=%d); inserting with NULL iso2/iso3",
+					r.id, r.name, code, len(code))
+			}
+		}
+
+		if _, err := stmt.ExecContext(ctx, r.id, r.name, iso2, iso3); err != nil {
+			return fmt.Errorf("insert country_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit country_ref: %w", err)
+	}
+
+	if nonISO > 0 {
+		log.Printf("migrateCountryRef: %d rows had non-ISO codes; inserted with NULL iso2/iso3", nonISO)
+	}
+
+	return nil
+}
+
+// migrateLanguageRef migrates Languages."LanguageRef" -> language_ref.
+func migrateLanguageRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "LanguageID", "LanguageName", "LanguageCode"
+		FROM "Languages"."LanguageRef"
+		ORDER BY "LanguageID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query LanguageRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx language_ref: %w", err)
+	type langRow struct {
+		id   int64
+		name string
+		code sql.NullString
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO language_ref (name, iso_code)
-		VALUES ($1, $2)
-		ON CONFLICT (name) DO UPDATE
-		SET iso_code = EXCLUDED.iso_code
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare language_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []langRow
 	for rows.Next() {
-		var name, code string
-		if err := rows.Scan(&name, &code); err != nil {
+		var r langRow
+		if err := rows.Scan(&r.id, &r.name, &r.code); err != nil {
 			return fmt.Errorf("scan LanguageRef row: %w", err)
 		}
-		code = strings.TrimSpace(strings.ToLower(code))
-		if code == "" {
-			return fmt.Errorf("language_ref name=%q has empty code", name)
-		}
-
-		if _, errExec := stmt.ExecContext(ctx, name, code); errExec != nil {
-			return fmt.Errorf("insert language_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate LanguageRef: %w", err)
 	}
 
-	log.Printf("migrateLanguageRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit language_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateLanguageRef: read %d rows from Languages.\"LanguageRef\"", len(allRows))
 
-//
-// genre_ref
-//
-
-func migrateGenreRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."GenreRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old GenreRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateGenreRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "GenreName"
-		FROM "References"."GenreRef"
-		ORDER BY "GenreID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx language_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO language_ref (id, name, code)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name,
+		    code = EXCLUDED.code
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert language_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		var code sql.NullString
+		if trimmed := strings.TrimSpace(r.code.String); trimmed != "" && trimmed != "Undefined" {
+			code = sql.NullString{String: trimmed, Valid: true}
+		}
+		if _, err := stmt.ExecContext(ctx, r.id, r.name, code); err != nil {
+			return fmt.Errorf("insert language_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit language_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateGenreRef migrates Genres."GenreRef" -> genre_ref.
+func migrateGenreRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "GenreID", "GenreName"
+		FROM "Genres"."GenreRef"
+		ORDER BY "GenreID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query GenreRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx genre_ref: %w", err)
+	type genreRow struct {
+		id   int64
+		name string
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO genre_ref (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO NOTHING
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare genre_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []genreRow
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var r genreRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
 			return fmt.Errorf("scan GenreRef row: %w", err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert genre_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate GenreRef: %w", err)
 	}
 
-	log.Printf("migrateGenreRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit genre_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateGenreRef: read %d rows from Genres.\"GenreRef\"", len(allRows))
 
-//
-// certificate_ref
-//
-
-func migrateCertificateRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."CertificateRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old CertificateRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateCertificateRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "CertificateName"
-		FROM "References"."CertificateRef"
-		ORDER BY "CertificateID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx genre_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO genre_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert genre_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert genre_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit genre_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateCertificateRef migrates Certificates."CertificateRef" -> certificate_ref.
+func migrateCertificateRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "CertificateID", "CertificateName"
+		FROM "Certificates"."CertificateRef"
+		ORDER BY "CertificateID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query CertificateRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx certificate_ref: %w", err)
+	type certRow struct {
+		id   int64
+		name string
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO certificate_ref (name, description)
-		VALUES ($1, NULL)
-		ON CONFLICT (name) DO NOTHING
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare certificate_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []certRow
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var r certRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
 			return fmt.Errorf("scan CertificateRef row: %w", err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert certificate_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate CertificateRef: %w", err)
 	}
 
-	log.Printf("migrateCertificateRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit certificate_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateCertificateRef: read %d rows from Certificates.\"CertificateRef\"", len(allRows))
 
-//
-// title_type_ref
-//
-
-func migrateTitleTypeRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."TitleTypeRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old TitleTypeRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateTitleTypeRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "TypeName"
-		FROM "References"."TitleTypeRef"
-		ORDER BY "TypeID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx certificate_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO certificate_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert certificate_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert certificate_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit certificate_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateTitleTypeRef migrates TitleTypes."TitleTypeRef" -> title_type_ref.
+func migrateTitleTypeRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "TitleTypeID", "TitleTypeName"
+		FROM "TitleTypes"."TitleTypeRef"
+		ORDER BY "TitleTypeID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query TitleTypeRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx title_type_ref: %w", err)
+	type ttRow struct {
+		id   int64
+		name string
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO title_type_ref (name, is_series)
-		VALUES ($1, $2)
-		ON CONFLICT (name) DO UPDATE
-		SET is_series = (title_type_ref.is_series OR EXCLUDED.is_series)
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare title_type_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []ttRow
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var r ttRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
 			return fmt.Errorf("scan TitleTypeRef row: %w", err)
 		}
-		lower := strings.ToLower(strings.TrimSpace(name))
-		isSeries := strings.Contains(lower, "series") || lower == "episode"
-
-		if _, errExec := stmt.ExecContext(ctx, name, isSeries); errExec != nil {
-			return fmt.Errorf("insert title_type_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate TitleTypeRef: %w", err)
 	}
 
-	log.Printf("migrateTitleTypeRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit title_type_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateTitleTypeRef: read %d rows from TitleTypes.\"TitleTypeRef\"", len(allRows))
 
-//
-// connection_type_ref
-//
-
-func migrateConnectionTypeRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."ConnectionTypeRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old ConnectionTypeRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateConnectionTypeRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "ConnectionTypeDescription"
-		FROM "References"."ConnectionTypeRef"
-		ORDER BY "ConnectionTypeID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx title_type_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO title_type_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert title_type_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert title_type_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit title_type_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateConnectionTypeRef migrates Connections."ConnectionTypeRef" -> connection_type_ref.
+func migrateConnectionTypeRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "ConnectionTypeID", "ConnectionTypeName"
+		FROM "Connections"."ConnectionTypeRef"
+		ORDER BY "ConnectionTypeID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query ConnectionTypeRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx connection_type_ref: %w", err)
+	type connRow struct {
+		id   int64
+		name string
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO connection_type_ref (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO NOTHING
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare connection_type_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []connRow
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var r connRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
 			return fmt.Errorf("scan ConnectionTypeRef row: %w", err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert connection_type_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate ConnectionTypeRef: %w", err)
 	}
 
-	log.Printf("migrateConnectionTypeRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit connection_type_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateConnectionTypeRef: read %d rows from Connections.\"ConnectionTypeRef\"", len(allRows))
 
-//
-// parental_guide_category_ref
-//
-
-func migrateParentalGuideRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."ParentGuideRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old ParentGuideRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateParentalGuideRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "ParentGuideDescription"
-		FROM "References"."ParentGuideRef"
-		ORDER BY "ParentGuideID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("query ParentGuideRef: %w", err)
+		return fmt.Errorf("begin tx connection_type_ref: %w", err)
 	}
-	defer rows.Close()
+	defer tx.Rollback()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx parental_guide_category_ref: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	const insertSQL = `
+		INSERT INTO connection_type_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO parental_guide_category_ref (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO NOTHING
-	`)
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
 	if err != nil {
-		return fmt.Errorf("prepare parental_guide_category_ref insert: %w", err)
+		return fmt.Errorf("prepare insert connection_type_ref: %w", err)
 	}
 	defer stmt.Close()
 
-	var processed int64
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("scan ParentGuideRef row: %w", err)
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert connection_type_ref id=%d: %w", r.id, err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert parental_guide_category_ref name=%q: %w", name, errExec)
-		}
-		processed++
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate ParentGuideRef: %w", err)
 	}
 
-	log.Printf("migrateParentalGuideRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit parental_guide_category_ref: %w", errCommit)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit connection_type_ref: %w", err)
 	}
+
 	return nil
 }
 
-//
-// quality_ref
-//
+// migrateParentalGuideRef migrates ParentsGuide."ParentsGuideCategoryRef" -> parental_guide_category_ref.
+func migrateParentalGuideRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "ParentsGuideCategoryID", "ParentsGuideCategoryName"
+		FROM "ParentsGuide"."ParentsGuideCategoryRef"
+		ORDER BY "ParentsGuideCategoryID"
+	`
 
-func migrateQualityRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."QualityRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old QualityRef: %w", err)
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
+	if err != nil {
+		return fmt.Errorf("query ParentsGuideCategoryRef: %w", err)
 	}
+	defer rows.Close()
+
+	type pgRow struct {
+		id   int64
+		name string
+	}
+
+	var allRows []pgRow
+	for rows.Next() {
+		var r pgRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
+			return fmt.Errorf("scan ParentsGuideCategoryRef row: %w", err)
+		}
+		allRows = append(allRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate ParentsGuideCategoryRef: %w", err)
+	}
+
+	log.Printf("migrateParentalGuideRef: read %d rows from ParentsGuide.\"ParentsGuideCategoryRef\"", len(allRows))
+
 	if dryRun {
-		log.Printf("migrateQualityRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "QualityName"
-		FROM "References"."QualityRef"
-		ORDER BY "QualityID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx parental_guide_category_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO parental_guide_category_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert parental_guide_category_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert parental_guide_category_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit parental_guide_category_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateQualityRef migrates Quality."QualityRef" -> quality_ref.
+func migrateQualityRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "QualityID", "QualityName"
+		FROM "Quality"."QualityRef"
+		ORDER BY "QualityID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query QualityRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx quality_ref: %w", err)
+	type qRow struct {
+		id   int64
+		name string
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO quality_ref (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO NOTHING
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare quality_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []qRow
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var r qRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
 			return fmt.Errorf("scan QualityRef row: %w", err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert quality_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate QualityRef: %w", err)
 	}
 
-	log.Printf("migrateQualityRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit quality_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateQualityRef: read %d rows from Quality.\"QualityRef\"", len(allRows))
 
-//
-// display_ref
-//
-
-func migrateDisplayRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."DisplayRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old DisplayRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateDisplayRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "DisplayType"
-		FROM "References"."DisplayRef"
-		ORDER BY "DisplayID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx quality_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO quality_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert quality_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert quality_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit quality_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateDisplayRef migrates Displays."DisplayRef" -> display_ref.
+func migrateDisplayRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "DisplayID", "DisplayName"
+		FROM "Displays"."DisplayRef"
+		ORDER BY "DisplayID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query DisplayRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx display_ref: %w", err)
+	type dRow struct {
+		id   int64
+		name string
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO display_ref (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO NOTHING
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare display_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []dRow
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var r dRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
 			return fmt.Errorf("scan DisplayRef row: %w", err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert display_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate DisplayRef: %w", err)
 	}
 
-	log.Printf("migrateDisplayRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit display_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateDisplayRef: read %d rows from Displays.\"DisplayRef\"", len(allRows))
 
-//
-// cast_role_type_ref
-//
-
-func migrateCastRoleTypeRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."CastTypeRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old CastTypeRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateCastRoleTypeRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "CastTypeDescription"
-		FROM "References"."CastTypeRef"
-		ORDER BY "CastTypeID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("query CastTypeRef: %w", err)
+		return fmt.Errorf("begin tx display_ref: %w", err)
 	}
-	defer rows.Close()
+	defer tx.Rollback()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx cast_role_type_ref: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	const insertSQL = `
+		INSERT INTO display_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO cast_role_type_ref (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO NOTHING
-	`)
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
 	if err != nil {
-		return fmt.Errorf("prepare cast_role_type_ref insert: %w", err)
+		return fmt.Errorf("prepare insert display_ref: %w", err)
 	}
 	defer stmt.Close()
 
-	var processed int64
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("scan CastTypeRef row: %w", err)
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert display_ref id=%d: %w", r.id, err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert cast_role_type_ref name=%q: %w", name, errExec)
-		}
-		processed++
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate CastTypeRef: %w", err)
 	}
 
-	log.Printf("migrateCastRoleTypeRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit cast_role_type_ref: %w", errCommit)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit display_ref: %w", err)
 	}
+
 	return nil
 }
 
-//
-// award_event_ref
-//
+// migrateCastRoleTypeRef migrates Cast."CastRoleTypeRef" -> cast_role_type_ref.
+func migrateCastRoleTypeRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "CastRoleTypeID", "CastRoleTypeName"
+		FROM "Cast"."CastRoleTypeRef"
+		ORDER BY "CastRoleTypeID"
+	`
 
-func migrateAwardEventRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."AwardEventRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old AwardEventRef: %w", err)
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
+	if err != nil {
+		return fmt.Errorf("query CastRoleTypeRef: %w", err)
 	}
+	defer rows.Close()
+
+	type crtRow struct {
+		id   int64
+		name string
+	}
+
+	var allRows []crtRow
+	for rows.Next() {
+		var r crtRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
+			return fmt.Errorf("scan CastRoleTypeRef row: %w", err)
+		}
+		allRows = append(allRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate CastRoleTypeRef: %w", err)
+	}
+
+	log.Printf("migrateCastRoleTypeRef: read %d rows from Cast.\"CastRoleTypeRef\"", len(allRows))
+
 	if dryRun {
-		log.Printf("migrateAwardEventRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "EventName"
-		FROM "References"."AwardEventRef"
-		ORDER BY "EventID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx cast_role_type_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO cast_role_type_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert cast_role_type_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert cast_role_type_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit cast_role_type_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateAwardEventRef migrates Awards."AwardEventRef" -> award_event_ref.
+func migrateAwardEventRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "AwardEventID", "AwardEventName"
+		FROM "Awards"."AwardEventRef"
+		ORDER BY "AwardEventID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query AwardEventRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx award_event_ref: %w", err)
+	type aeRow struct {
+		id   int64
+		name string
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO award_event_ref (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO NOTHING
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare award_event_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []aeRow
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var r aeRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
 			return fmt.Errorf("scan AwardEventRef row: %w", err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert award_event_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate AwardEventRef: %w", err)
 	}
 
-	log.Printf("migrateAwardEventRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit award_event_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateAwardEventRef: read %d rows from Awards.\"AwardEventRef\"", len(allRows))
 
-//
-// award_nomination_type_ref
-//
-
-func migrateAwardNominationTypeRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."AwardNominationTypeRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old AwardNominationTypeRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateAwardNominationTypeRef [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "NominationType"
-		FROM "References"."AwardNominationTypeRef"
-		ORDER BY "NominationTypeID" ASC
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx award_event_ref: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO award_event_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert award_event_ref: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert award_event_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit award_event_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateAwardNominationTypeRef migrates Awards."AwardNominationTypeRef" -> award_nomination_type_ref.
+func migrateAwardNominationTypeRef(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "AwardNominationTypeID", "AwardNominationTypeName"
+		FROM "Awards"."AwardNominationTypeRef"
+		ORDER BY "AwardNominationTypeID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
 	if err != nil {
 		return fmt.Errorf("query AwardNominationTypeRef: %w", err)
 	}
 	defer rows.Close()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx award_nomination_type_ref: %w", err)
+	type antRow struct {
+		id   int64
+		name string
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO award_nomination_type_ref (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO NOTHING
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare award_nomination_type_ref insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var processed int64
+	var allRows []antRow
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var r antRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
 			return fmt.Errorf("scan AwardNominationTypeRef row: %w", err)
 		}
-		if _, errExec := stmt.ExecContext(ctx, name); errExec != nil {
-			return fmt.Errorf("insert award_nomination_type_ref name=%q: %w", name, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate AwardNominationTypeRef: %w", err)
 	}
 
-	log.Printf("migrateAwardNominationTypeRef: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit award_nomination_type_ref: %w", errCommit)
-	}
-	return nil
-}
+	log.Printf("migrateAwardNominationTypeRef: read %d rows from Awards.\"AwardNominationTypeRef\"", len(allRows))
 
-//
-// certificate_country
-//
-
-func migrateCertificateCountry(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
-	var total int64
-	if err := oldDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM "References"."CertificateCountryRef"`).Scan(&total); err != nil {
-		return fmt.Errorf("count old CertificateCountryRef: %w", err)
-	}
 	if dryRun {
-		log.Printf("migrateCertificateCountry [DRY-RUN]: would process %d rows", total)
 		return nil
 	}
 
-	// We assume that IDs in old reference tables map 1:1 to rows we migrated already
-	// into certificate_ref and country_ref (since they only had one row per ID).
-	// So we can safely reuse them here.
-	rows, err := oldDB.QueryContext(ctx, `
-		SELECT "CountryID", "CertificateID", "Age"
-		FROM "References"."CertificateCountryRef"
-		ORDER BY "CountryID", "CertificateID"
-	`)
+	tx, err := newDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("query CertificateCountryRef: %w", err)
+		return fmt.Errorf("begin tx award_nomination_type_ref: %w", err)
 	}
-	defer rows.Close()
+	defer tx.Rollback()
 
-	tx, err := newDB.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin tx certificate_country: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	const insertSQL = `
+		INSERT INTO award_nomination_type_ref (id, name)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE
+		SET name = EXCLUDED.name
+	`
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO certificate_country (country_id, certificate_id, min_age)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (country_id, certificate_id) DO UPDATE
-		SET min_age = EXCLUDED.min_age
-	`)
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
 	if err != nil {
-		return fmt.Errorf("prepare certificate_country insert: %w", err)
+		return fmt.Errorf("prepare insert award_nomination_type_ref: %w", err)
 	}
 	defer stmt.Close()
 
-	var processed int64
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.name); err != nil {
+			return fmt.Errorf("insert award_nomination_type_ref id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit award_nomination_type_ref: %w", err)
+	}
+
+	return nil
+}
+
+// migrateCertificateCountry migrates Certificates."CertificateCountry" -> certificate_country.
+func migrateCertificateCountry(ctx context.Context, oldDB, newDB *sql.DB, dryRun bool) error {
+	const srcQuery = `
+		SELECT "CertificateCountryID", "CertificateID", "CountryID"
+		FROM "Certificates"."CertificateCountry"
+		ORDER BY "CertificateCountryID"
+	`
+
+	rows, err := oldDB.QueryContext(ctx, srcQuery)
+	if err != nil {
+		return fmt.Errorf("query CertificateCountry: %w", err)
+	}
+	defer rows.Close()
+
+	type ccRow struct {
+		id           int64
+		certificateID int64
+		countryID    int64
+	}
+
+	var allRows []ccRow
 	for rows.Next() {
-		var (
-			countryID     int32
-			certificateID int32
-			age           sql.NullInt32
-		)
-		if err := rows.Scan(&countryID, &certificateID, &age); err != nil {
-			return fmt.Errorf("scan CertificateCountryRef row: %w", err)
+		var r ccRow
+		if err := rows.Scan(&r.id, &r.certificateID, &r.countryID); err != nil {
+			return fmt.Errorf("scan CertificateCountry row: %w", err)
 		}
-
-		var minAge *int32
-		if age.Valid {
-			v := age.Int32
-			minAge = &v
-		}
-
-		if _, errExec := stmt.ExecContext(ctx, countryID, certificateID, minAge); errExec != nil {
-			return fmt.Errorf("insert certificate_country (%d,%d): %w", countryID, certificateID, errExec)
-		}
-		processed++
+		allRows = append(allRows, r)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate CertificateCountryRef: %w", err)
+		return fmt.Errorf("iterate CertificateCountry: %w", err)
 	}
 
-	log.Printf("migrateCertificateCountry: %d rows processed", processed)
-	if errCommit := tx.Commit(); errCommit != nil {
-		return fmt.Errorf("commit certificate_country: %w", errCommit)
+	log.Printf("migrateCertificateCountry: read %d rows from Certificates.\"CertificateCountry\"", len(allRows))
+
+	if dryRun {
+		return nil
 	}
+
+	tx, err := newDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx certificate_country: %w", err)
+	}
+	defer tx.Rollback()
+
+	const insertSQL = `
+		INSERT INTO certificate_country (id, certificate_id, country_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (id) DO UPDATE
+		SET certificate_id = EXCLUDED.certificate_id,
+		    country_id = EXCLUDED.country_id
+	`
+
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert certificate_country: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range allRows {
+		if _, err := stmt.ExecContext(ctx, r.id, r.certificateID, r.countryID); err != nil {
+			return fmt.Errorf("insert certificate_country id=%d: %w", r.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit certificate_country: %w", err)
+	}
+
 	return nil
 }
